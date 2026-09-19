@@ -1,8 +1,43 @@
 import type { InterviewRoom, ParticipantStatus, CreateRoomRequest, CreateRoomResponse, JoinRoomResponse } from '../types';
+import { ApiError } from './api';
+import { mockGetInvitationByToken } from './mockInvitationService';
 
 const STORAGE_KEY = 'code_interview_rooms';
+const PARTICIPANTS_STORAGE_KEY = 'code_interview_participants';
+
+const JOINABLE_STATUSES: InterviewRoom['status'][] = ['WAITING', 'ACTIVE'];
 
 const mockRooms: InterviewRoom[] = [];
+
+const loadParticipantsFromStorage = (): ParticipantStatus[] => {
+  try {
+    const stored = localStorage.getItem(PARTICIPANTS_STORAGE_KEY);
+    if (stored) {
+      return JSON.parse(stored);
+    }
+  } catch (e) {
+    console.warn('Failed to load participants from storage:', e);
+  }
+  return [];
+};
+
+let participantsCache: ParticipantStatus[] | null = null;
+
+const getParticipantsCache = (): ParticipantStatus[] => {
+  if (!participantsCache) {
+    participantsCache = loadParticipantsFromStorage();
+  }
+  return participantsCache;
+};
+
+const saveParticipants = (participants: ParticipantStatus[]) => {
+  participantsCache = participants;
+  try {
+    localStorage.setItem(PARTICIPANTS_STORAGE_KEY, JSON.stringify(participants));
+  } catch (e) {
+    console.warn('Failed to save participants to storage:', e);
+  }
+};
 
 const loadFromStorage = (): InterviewRoom[] => {
   try {
@@ -90,7 +125,7 @@ export async function mockGetRoomById(roomId: string): Promise<InterviewRoom> {
   const rooms = getRoomsCache();
   const room = rooms.find(r => r.id === roomId);
   if (!room) {
-    throw new Error('房间不存在');
+    throw new ApiError(404, 'ROOM_NOT_FOUND', '房间不存在或已关闭');
   }
   return { ...room };
 }
@@ -100,7 +135,7 @@ export async function mockGetRoomByCode(roomCode: string): Promise<InterviewRoom
   const rooms = getRoomsCache();
   const room = rooms.find(r => r.roomCode === roomCode);
   if (!room) {
-    throw new Error('房间不存在');
+    throw new ApiError(404, 'ROOM_NOT_FOUND', '房间不存在或已关闭');
   }
   return { ...room };
 }
@@ -174,28 +209,57 @@ export async function mockJoinRoom(roomId: string, data: { candidateName: string
   const rooms = getRoomsCache();
   const index = rooms.findIndex(r => r.id === roomId);
   if (index === -1) {
-    throw new Error('房间不存在');
+    throw new ApiError(404, 'ROOM_NOT_FOUND', '房间不存在或已关闭');
   }
 
-  const candidateId = 'candidate-' + Date.now();
+  const room = rooms[index];
+
+  // 邀请凭证校验：与后端 RoomAdmissionService 保持同一顺序与结论
+  if (data.inviteToken && data.inviteToken.trim()) {
+    const invitation = await mockGetInvitationByToken(data.inviteToken.trim());
+    if (invitation.roomId !== roomId) {
+      throw new ApiError(400, 'INVITATION_ROOM_MISMATCH', '邀请链接与房间不匹配');
+    }
+  }
+
+  if (!data.candidateName || !data.candidateName.trim()) {
+    throw new ApiError(400, 'INVALID_NAME', '请输入候选人姓名');
+  }
+
+  // 已结束 / 已取消的房间拒绝加入
+  if (!JOINABLE_STATUSES.includes(room.status)) {
+    throw new ApiError(409, 'ROOM_ENDED', '房间已结束或已取消，无法加入');
+  }
+
+  const candidateName = data.candidateName.trim();
   const now = new Date().toISOString();
 
-  const updatedRoom: InterviewRoom = {
-    ...rooms[index],
-    candidateId: candidateId,
-    status: 'ACTIVE',
-    startedAt: now,
-  };
+  // 重复提交防护：复用同房间同名候选人的既有参与身份
+  const existing = getParticipantsCache()
+    .find(p => p.roomId === roomId && p.userRole === 'CANDIDATE' && p.userName === candidateName);
 
-  const participant: ParticipantStatus = {
-    id: 'participant-' + Date.now(),
-    roomId: roomId,
-    userId: candidateId,
-    userName: data.candidateName,
-    userRole: 'CANDIDATE',
-    isOnline: true,
-    lastHeartbeat: now,
-    joinedAt: now,
+  const participant: ParticipantStatus = existing
+    ? { ...existing, isOnline: true, lastHeartbeat: now }
+    : {
+        id: 'participant-' + Date.now(),
+        roomId: roomId,
+        userId: '',
+        userName: candidateName,
+        userRole: 'CANDIDATE',
+        isOnline: true,
+        lastHeartbeat: now,
+        joinedAt: now,
+      };
+  participant.userId = participant.id;
+
+  const allParticipants = getParticipantsCache().filter(p => p.id !== participant.id);
+  saveParticipants([...allParticipants, participant]);
+
+  const updatedRoom: InterviewRoom = {
+    ...room,
+    candidateId: participant.userId,
+    status: 'ACTIVE',
+    startedAt: room.startedAt ?? now,
   };
 
   roomsCache = [...rooms];
@@ -205,7 +269,7 @@ export async function mockJoinRoom(roomId: string, data: { candidateName: string
   return {
     participant: { ...participant },
     room: { ...updatedRoom },
-    message: '加入成功',
+    message: data.inviteToken ? 'Joined via invitation token' : 'Joined via room code',
   };
 }
 

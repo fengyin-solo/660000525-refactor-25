@@ -1,4 +1,5 @@
 import { request } from './api';
+import { handleNetworkFailure } from './networkFallback';
 import type { CreateRoomRequest, InterviewRoom, ParticipantStatus, JoinRoomResponse, CreateRoomResponse } from '../types';
 import {
   mockCreateRoom,
@@ -11,18 +12,7 @@ import {
   mockLeaveRoom,
   mockHeartbeat,
 } from './mockInterviewRoomService';
-import { isUsingMockData, setUseMockFallback } from './problemService';
-
-const handleApiError = (error: any): boolean => {
-  if (error.message.includes('Failed to fetch') ||
-      error.message.includes('NetworkError') ||
-      error.message.includes('ECONNREFUSED') ||
-      error.status === 0) {
-    setUseMockFallback(true);
-    return true;
-  }
-  return false;
-};
+import { isUsingMockData } from './mockMode';
 
 export async function createRoom(data: CreateRoomRequest): Promise<CreateRoomResponse> {
   if (isUsingMockData()) {
@@ -33,8 +23,8 @@ export async function createRoom(data: CreateRoomRequest): Promise<CreateRoomRes
       method: 'POST',
       body: data,
     });
-  } catch (error: any) {
-    if (handleApiError(error)) {
+  } catch (error) {
+    if (handleNetworkFailure(error)) {
       return mockCreateRoom(data);
     }
     throw error;
@@ -47,8 +37,8 @@ export async function getRoomById(roomId: string): Promise<InterviewRoom> {
   }
   try {
     return await request<InterviewRoom>(`/interview-rooms/${roomId}`);
-  } catch (error: any) {
-    if (handleApiError(error)) {
+  } catch (error) {
+    if (handleNetworkFailure(error)) {
       return mockGetRoomById(roomId);
     }
     throw error;
@@ -61,8 +51,8 @@ export async function getRoomByCode(roomCode: string): Promise<InterviewRoom> {
   }
   try {
     return await request<InterviewRoom>(`/interview-rooms/code/${roomCode}`);
-  } catch (error: any) {
-    if (handleApiError(error)) {
+  } catch (error) {
+    if (handleNetworkFailure(error)) {
       return mockGetRoomByCode(roomCode);
     }
     throw error;
@@ -75,8 +65,8 @@ export async function getRoomsByInterviewer(interviewerId: string): Promise<Inte
   }
   try {
     return await request<InterviewRoom[]>(`/interview-rooms/interviewer/${interviewerId}`);
-  } catch (error: any) {
-    if (handleApiError(error)) {
+  } catch (error) {
+    if (handleNetworkFailure(error)) {
       return mockGetRoomsByInterviewer(interviewerId);
     }
     throw error;
@@ -92,8 +82,8 @@ export async function updateRoomStatus(roomId: string, status: string): Promise<
       method: 'PUT',
       body: { status },
     });
-  } catch (error: any) {
-    if (handleApiError(error)) {
+  } catch (error) {
+    if (handleNetworkFailure(error)) {
       return mockUpdateRoomStatus(roomId, status);
     }
     throw error;
@@ -106,8 +96,8 @@ export async function getRoomParticipants(roomId: string): Promise<ParticipantSt
   }
   try {
     return await request<ParticipantStatus[]>(`/interview-rooms/${roomId}/participants`);
-  } catch (error: any) {
-    if (handleApiError(error)) {
+  } catch (error) {
+    if (handleNetworkFailure(error)) {
       return mockGetRoomParticipants(roomId);
     }
     throw error;
@@ -123,8 +113,8 @@ export async function joinRoom(roomId: string, data: { candidateName: string; in
       method: 'POST',
       body: data,
     });
-  } catch (error: any) {
-    if (handleApiError(error)) {
+  } catch (error) {
+    if (handleNetworkFailure(error)) {
       return mockJoinRoom(roomId, data);
     }
     throw error;
@@ -140,8 +130,8 @@ export async function leaveRoom(roomId: string, userId: string): Promise<void> {
       method: 'POST',
       body: { userId },
     });
-  } catch (error: any) {
-    if (handleApiError(error)) {
+  } catch (error) {
+    if (handleNetworkFailure(error)) {
       return mockLeaveRoom(roomId, userId);
     }
     throw error;
@@ -157,8 +147,8 @@ export async function heartbeat(roomId: string, userId: string): Promise<Partici
       method: 'POST',
       body: { userId },
     });
-  } catch (error: any) {
-    if (handleApiError(error)) {
+  } catch (error) {
+    if (handleNetworkFailure(error)) {
       return mockHeartbeat(roomId, userId);
     }
     throw error;

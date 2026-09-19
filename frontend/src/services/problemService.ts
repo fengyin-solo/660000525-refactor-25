@@ -1,4 +1,6 @@
 import { request } from './api';
+import { handleNetworkFailure } from './networkFallback';
+import { isUsingMockData } from './mockMode';
 import type { Problem, CreateProblemRequest, UpdateProblemRequest } from '../types';
 import {
   mockGetProblems,
@@ -13,30 +15,11 @@ export interface ProblemListParams {
   tag?: string;
 }
 
-let useMockFallback = false;
-
-export const setUseMockFallback = (value: boolean) => {
-  useMockFallback = value;
-  if (value) {
-    console.warn('⚠️ 后端服务不可用，已切换到 Mock 数据模式。数据将保存在浏览器本地存储中。');
-  }
-};
-
-export const isUsingMockData = () => useMockFallback;
-
-const handleApiError = (error: any) => {
-  if (error.message.includes('Failed to fetch') ||
-      error.message.includes('NetworkError') ||
-      error.message.includes('ECONNREFUSED') ||
-      error.status === 0) {
-    setUseMockFallback(true);
-    return true;
-  }
-  return false;
-};
+// 向后兼容：历史调用方从 problemService 引入该开关，实际状态统一存放在 mockMode
+export { isUsingMockData };
 
 export async function getProblems(params?: ProblemListParams): Promise<Problem[]> {
-  if (useMockFallback) {
+  if (isUsingMockData()) {
     return mockGetProblems(params);
   }
   try {
@@ -51,7 +34,7 @@ export async function getProblems(params?: ProblemListParams): Promise<Problem[]
     const response = await request<any[]>(`/problems${queryString ? `?${queryString}` : ''}`);
     return parseProblemListResponse(response);
   } catch (error: any) {
-    if (handleApiError(error)) {
+    if (handleNetworkFailure(error)) {
       return mockGetProblems(params);
     }
     throw error;
@@ -59,14 +42,14 @@ export async function getProblems(params?: ProblemListParams): Promise<Problem[]
 }
 
 export async function getProblemById(id: string): Promise<Problem> {
-  if (useMockFallback) {
+  if (isUsingMockData()) {
     return mockGetProblemById(id);
   }
   try {
     const response = await request<any>(`/problems/${id}`);
     return parseProblemResponse(response);
   } catch (error: any) {
-    if (handleApiError(error)) {
+    if (handleNetworkFailure(error)) {
       return mockGetProblemById(id);
     }
     throw error;
@@ -74,7 +57,7 @@ export async function getProblemById(id: string): Promise<Problem> {
 }
 
 export async function createProblem(data: CreateProblemRequest): Promise<Problem> {
-  if (useMockFallback) {
+  if (isUsingMockData()) {
     return mockCreateProblem(data);
   }
   try {
@@ -90,7 +73,7 @@ export async function createProblem(data: CreateProblemRequest): Promise<Problem
     });
     return parseProblemResponse(response);
   } catch (error: any) {
-    if (handleApiError(error)) {
+    if (handleNetworkFailure(error)) {
       return mockCreateProblem(data);
     }
     throw error;
@@ -98,7 +81,7 @@ export async function createProblem(data: CreateProblemRequest): Promise<Problem
 }
 
 export async function updateProblem(id: string, data: UpdateProblemRequest): Promise<Problem> {
-  if (useMockFallback) {
+  if (isUsingMockData()) {
     return mockUpdateProblem(id, data);
   }
   try {
@@ -119,7 +102,7 @@ export async function updateProblem(id: string, data: UpdateProblemRequest): Pro
     });
     return parseProblemResponse(response);
   } catch (error: any) {
-    if (handleApiError(error)) {
+    if (handleNetworkFailure(error)) {
       return mockUpdateProblem(id, data);
     }
     throw error;
@@ -127,7 +110,7 @@ export async function updateProblem(id: string, data: UpdateProblemRequest): Pro
 }
 
 export async function deleteProblem(id: string): Promise<void> {
-  if (useMockFallback) {
+  if (isUsingMockData()) {
     return mockDeleteProblem(id);
   }
   try {
@@ -135,7 +118,7 @@ export async function deleteProblem(id: string): Promise<void> {
       method: 'DELETE',
     });
   } catch (error: any) {
-    if (handleApiError(error)) {
+    if (handleNetworkFailure(error)) {
       return mockDeleteProblem(id);
     }
     throw error;

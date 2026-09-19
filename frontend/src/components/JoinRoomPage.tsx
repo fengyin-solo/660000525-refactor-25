@@ -1,9 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { getInvitationByToken } from '../services/invitationService';
-import { getRoomByCode, getRoomById, joinRoom } from '../services/interviewRoomService';
 import { useInterviewStore } from '../store/interview';
 import type { InterviewRoom, User } from '../types';
+import { resolveCredential, submitJoin, buildCandidateUser, assertRoomJoinable, toErrorMessage } from '../services/joinAdmission';
 
 export const JoinRoomPage: React.FC = () => {
   const navigate = useNavigate();
@@ -19,55 +18,49 @@ export const JoinRoomPage: React.FC = () => {
   const [initialLoading, setInitialLoading] = useState(false);
   const [error, setError] = useState('');
 
+  /**
+   * 凭证加载：邀请链接（token）与房间码（code）共用 resolveCredential，
+   * 保证无效凭证、已结束房间、网络失败在任意入口得到同样结论。
+   */
+  const loadCredential = async (params: { token?: string; code?: string }) => {
+    setInitialLoading(true);
+    setError('');
+    try {
+      const { room, invitation } = await resolveCredential(params);
+      // 已结束 / 已取消房间在两个入口都直接拦下，不允许继续填写提交
+      assertRoomJoinable(room);
+      setRoomInfo(room);
+      if (invitation) {
+        setCandidateName(invitation.candidateName || '');
+        setCandidateEmail(invitation.candidateEmail || '');
+      }
+    } catch (err) {
+      setRoomInfo(null);
+      setError(toErrorMessage(err, '获取房间信息失败'));
+    } finally {
+      setInitialLoading(false);
+    }
+  };
+
   useEffect(() => {
     const token = searchParams.get('token');
     const code = searchParams.get('code');
 
     if (token) {
       setTokenFromUrl(token);
-      fetchInvitationByToken(token);
+      loadCredential({ token });
     } else if (code) {
-      setRoomCodeInput(code);
-      fetchRoomByCode(code);
+      setRoomCodeInput(code.toUpperCase());
+      loadCredential({ code });
     }
   }, [searchParams]);
-
-  const fetchInvitationByToken = async (token: string) => {
-    setInitialLoading(true);
-    setError('');
-    try {
-      const invitation = await getInvitationByToken(token);
-      setCandidateName(invitation.candidateName || '');
-      setCandidateEmail(invitation.candidateEmail || '');
-      const room = await getRoomById(invitation.roomId);
-      setRoomInfo(room);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '获取邀请信息失败');
-    } finally {
-      setInitialLoading(false);
-    }
-  };
-
-  const fetchRoomByCode = async (code: string) => {
-    if (code.length !== 6) return;
-    setInitialLoading(true);
-    setError('');
-    try {
-      const room = await getRoomByCode(code);
-      setRoomInfo(room);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '房间不存在或已关闭');
-      setRoomInfo(null);
-    } finally {
-      setInitialLoading(false);
-    }
-  };
 
   const handleRoomCodeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value.toUpperCase().slice(0, 6);
     setRoomCodeInput(value);
+    setError('');
     if (value.length === 6) {
-      fetchRoomByCode(value);
+      loadCredential({ code: value });
     } else {
       setRoomInfo(null);
     }
@@ -92,25 +85,20 @@ export const JoinRoomPage: React.FC = () => {
 
     setLoading(true);
     try {
-      const inviteToken = tokenFromUrl || '';
-      const result = await joinRoom(roomInfo.id, {
+      // 两条入口在此合并为同一次提交：服务端统一执行房间/凭证/状态/幂等校验
+      const result = await submitJoin({
+        room: roomInfo,
         candidateName: candidateName.trim(),
-        inviteToken,
+        inviteToken: tokenFromUrl,
       });
 
-      const user: User = {
-        id: result.participant.userId,
-        name: candidateName.trim(),
-        email: candidateEmail.trim(),
-        role: 'CANDIDATE',
-        createdAt: new Date().toISOString(),
-      };
+      const user: User = buildCandidateUser(result, candidateEmail.trim());
 
       setCurrentUser(user);
       setCurrentRoom(result.room);
       navigate(`/room/${result.room.id}/candidate`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '加入房间失败');
+      setError(toErrorMessage(err, '加入房间失败'));
     } finally {
       setLoading(false);
     }
