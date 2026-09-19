@@ -1,6 +1,7 @@
 package com.codeinterview.controller;
 
 import com.codeinterview.dto.CreateRoomResponse;
+import com.codeinterview.dto.ErrorResponse;
 import com.codeinterview.dto.JoinRoomResponse;
 import com.codeinterview.dto.WebSocketMessage;
 import com.codeinterview.model.CandidateInvitation;
@@ -124,27 +125,38 @@ public class InterviewRoomController {
 
     @PostMapping("/{roomId}/join")
     @Transactional
-    public ResponseEntity<JoinRoomResponse> joinRoom(@PathVariable String roomId, @RequestBody Map<String, String> request) {
+    public ResponseEntity<?> joinRoom(@PathVariable String roomId, @RequestBody Map<String, String> request) {
         String candidateName = request.get("candidateName");
         String inviteToken = request.get("inviteToken");
 
         Optional<InterviewRoom> roomOpt = interviewRoomRepository.findById(roomId);
         if (roomOpt.isEmpty()) {
-            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(new ErrorResponse("INVALID_CREDENTIAL", "无效的邀请链接或房间码"));
         }
         InterviewRoom room = roomOpt.get();
+
+        // 统一准入顺序：房间存在 -> 房间可加入 -> 凭证校验。
+        // 邀请链接与房间码入口共用此接口，结论天然一致。
+        if ("COMPLETED".equals(room.getStatus()) || "CANCELLED".equals(room.getStatus())
+                || (!"WAITING".equals(room.getStatus()) && !"ACTIVE".equals(room.getStatus()))) {
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body(new ErrorResponse("ROOM_FINISHED", "房间已结束，无法加入"));
+        }
 
         String message = "Joined via room code";
 
         if (inviteToken != null && !inviteToken.trim().isEmpty()) {
             Optional<CandidateInvitation> invitationOpt = candidateInvitationRepository.findByInviteToken(inviteToken);
             if (invitationOpt.isEmpty()) {
-                return new ResponseEntity<>(HttpStatus.UNAUTHORIZED);
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(new ErrorResponse("INVALID_CREDENTIAL", "无效的邀请链接或房间码"));
             }
 
             CandidateInvitation invitation = invitationOpt.get();
             if (!invitation.getRoomId().equals(roomId)) {
-                return new ResponseEntity<>(HttpStatus.BAD_REQUEST);
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                        .body(new ErrorResponse("INVITATION_MISMATCH", "邀请链接与房间不匹配"));
             }
 
             invitation.setStatus("JOINED");

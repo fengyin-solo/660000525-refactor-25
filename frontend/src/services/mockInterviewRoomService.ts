@@ -1,4 +1,5 @@
 import type { InterviewRoom, ParticipantStatus, CreateRoomRequest, CreateRoomResponse, JoinRoomResponse } from '../types';
+import { mockMarkInvitationJoinedByToken } from './mockInvitationService';
 
 const STORAGE_KEY = 'code_interview_rooms';
 
@@ -100,7 +101,7 @@ export async function mockGetRoomByCode(roomCode: string): Promise<InterviewRoom
   const rooms = getRoomsCache();
   const room = rooms.find(r => r.roomCode === roomCode);
   if (!room) {
-    throw new Error('房间不存在');
+    throw new Error('无效的房间码');
   }
   return { ...room };
 }
@@ -175,6 +176,18 @@ export async function mockJoinRoom(roomId: string, data: { candidateName: string
   const index = rooms.findIndex(r => r.id === roomId);
   if (index === -1) {
     throw new Error('房间不存在');
+  }
+
+  if (rooms[index].status === 'COMPLETED' || rooms[index].status === 'CANCELLED') {
+    throw new Error('房间已结束，无法加入');
+  }
+
+  if (data.inviteToken) {
+    const invitations = JSON.parse(localStorage.getItem('code_interview_invitations') || '[]') as { inviteToken: string; roomId: string }[];
+    const invitation = invitations.find(inv => inv.inviteToken === data.inviteToken);
+    if (!invitation) throw new Error('无效的邀请链接或房间码');
+    if (invitation.roomId !== roomId) throw new Error('邀请链接与房间不匹配');
+    await mockMarkInvitationJoinedByToken(data.inviteToken);
   }
 
   const candidateId = 'candidate-' + Date.now();

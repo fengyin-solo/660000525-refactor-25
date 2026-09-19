@@ -1,9 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { getInvitationByToken } from '../services/invitationService';
-import { getRoomByCode, getRoomById, joinRoom } from '../services/interviewRoomService';
 import { useInterviewStore } from '../store/interview';
 import type { InterviewRoom, User } from '../types';
+import {
+  resolveJoinCredential,
+  submitJoin,
+  buildCandidateUser,
+  JoinError,
+} from '../services/joinRoomFlow';
 
 export const JoinRoomPage: React.FC = () => {
   const navigate = useNavigate();
@@ -13,68 +17,69 @@ export const JoinRoomPage: React.FC = () => {
   const [candidateName, setCandidateName] = useState('');
   const [candidateEmail, setCandidateEmail] = useState('');
   const [roomCodeInput, setRoomCodeInput] = useState('');
-  const [tokenFromUrl, setTokenFromUrl] = useState('');
+  const [inviteToken, setInviteToken] = useState('');
   const [roomInfo, setRoomInfo] = useState<InterviewRoom | null>(null);
   const [loading, setLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(false);
   const [error, setError] = useState('');
+
+  // 预览阶段的在途请求标识，避免输入抖动触发的并发解析互相覆盖
+  const previewSeqRef = useRef(0);
+  // 提交阶段的在途锁，防止重复点击 / 回车产生多次加入
+  const submittingRef = useRef(false);
 
   useEffect(() => {
     const token = searchParams.get('token');
     const code = searchParams.get('code');
 
     if (token) {
-      setTokenFromUrl(token);
-      fetchInvitationByToken(token);
+      setInviteToken(token);
+      void resolvePreview({ inviteToken: token });
     } else if (code) {
-      setRoomCodeInput(code);
-      fetchRoomByCode(code);
+      setRoomCodeInput(code.toUpperCase());
+      void resolvePreview({ roomCode: code });
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
-  const fetchInvitationByToken = async (token: string) => {
+  /** 凭证预览：两条入口共用 resolveJoinCredential，结论与提示完全一致 */
+  const resolvePreview = async (params: { inviteToken?: string; roomCode?: string }) => {
+    const seq = ++previewSeqRef.current;
     setInitialLoading(true);
     setError('');
     try {
-      const invitation = await getInvitationByToken(token);
-      setCandidateName(invitation.candidateName || '');
-      setCandidateEmail(invitation.candidateEmail || '');
-      const room = await getRoomById(invitation.roomId);
-      setRoomInfo(room);
+      const resolved = await resolveJoinCredential(params);
+      if (seq !== previewSeqRef.current) return; // 已有更新的请求，丢弃过期结果
+      setRoomInfo(resolved.room);
+      if (resolved.invitation) {
+        setCandidateName(resolved.invitation.candidateName || '');
+        setCandidateEmail(resolved.invitation.candidateEmail || '');
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : '获取邀请信息失败');
-    } finally {
-      setInitialLoading(false);
-    }
-  };
-
-  const fetchRoomByCode = async (code: string) => {
-    if (code.length !== 6) return;
-    setInitialLoading(true);
-    setError('');
-    try {
-      const room = await getRoomByCode(code);
-      setRoomInfo(room);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '房间不存在或已关闭');
+      if (seq !== previewSeqRef.current) return;
       setRoomInfo(null);
+      setError(err instanceof JoinError ? err.message : '获取房间信息失败');
     } finally {
-      setInitialLoading(false);
+      if (seq === previewSeqRef.current) setInitialLoading(false);
     }
   };
 
   const handleRoomCodeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value.toUpperCase().slice(0, 6);
     setRoomCodeInput(value);
+    setError('');
     if (value.length === 6) {
-      fetchRoomByCode(value);
+      void resolvePreview({ roomCode: value });
     } else {
+      previewSeqRef.current++; // 使进行中的解析结果作废
       setRoomInfo(null);
     }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submittingRef.current) return; // 重复提交直接忽略
+
     setError('');
 
     if (!candidateName.trim()) {
@@ -90,28 +95,29 @@ export const JoinRoomPage: React.FC = () => {
       return;
     }
 
+    submittingRef.current = true;
     setLoading(true);
     try {
-      const inviteToken = tokenFromUrl || '';
-      const result = await joinRoom(roomInfo.id, {
+      const result = await submitJoin({
+        roomId: roomInfo.id,
         candidateName: candidateName.trim(),
         inviteToken,
       });
 
-      const user: User = {
-        id: result.participant.userId,
-        name: candidateName.trim(),
-        email: candidateEmail.trim(),
-        role: 'CANDIDATE',
-        createdAt: new Date().toISOString(),
-      };
+      // 身份与房间信息一律取自服务端响应，两个入口保持一致
+      const user: User = buildCandidateUser(result, candidateName.trim(), candidateEmail.trim());
 
       setCurrentUser(user);
       setCurrentRoom(result.room);
       navigate(`/room/${result.room.id}/candidate`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '加入房间失败');
+      setError(err instanceof JoinError ? err.message : '加入房间失败');
+      // 加入被拒绝（如房间刚结束）时刷新房间快照，使按钮状态与结论同步
+      if (err instanceof JoinError && err.code === 'ROOM_FINISHED') {
+        setRoomInfo(null);
+      }
     } finally {
+      submittingRef.current = false;
       setLoading(false);
     }
   };
@@ -244,7 +250,7 @@ export const JoinRoomPage: React.FC = () => {
             />
           </div>
 
-          {tokenFromUrl ? (
+          {inviteToken ? (
             <div style={{ marginBottom: '16px' }}>
               <label style={{
                 display: 'block',
@@ -256,7 +262,7 @@ export const JoinRoomPage: React.FC = () => {
               </label>
               <input
                 type="text"
-                value={tokenFromUrl}
+                value={inviteToken}
                 readOnly
                 style={{
                   width: '100%',
@@ -342,7 +348,7 @@ export const JoinRoomPage: React.FC = () => {
           </button>
         </form>
 
-        {!tokenFromUrl && (
+        {!inviteToken && (
           <p style={{
             color: '#666',
             margin: '16px 0 0 0',
